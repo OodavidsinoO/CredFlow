@@ -1,0 +1,26 @@
+# Credentials — NEVER commit real .env
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Reports
+reports/
+
+# State database (contains credentials)
+credflow_state.db
+*.db-journal
+*.db-wal
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
