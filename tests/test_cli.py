@@ -82,6 +82,40 @@ class TestParseTargetsCsv:
         assert len(targets) == 1
         assert targets[0].ip == "10.0.0.1"
 
+    # ── escalation CSV columns ──────────────────────────────
+
+    def test_escalation_columns_parsed(self, tmp_dir):
+        path = str(tmp_dir / "escalation.csv")
+        with open(path, "w") as f:
+            f.write("ip,username,password,os_type,escalation_method,escalation_user,escalation_password\n")
+            f.write("10.0.0.1,root,pw1,linux,sudo,root,sudopw\n")
+        targets = parse_targets_csv(path)
+        t = targets[0]
+        assert t.escalation_method == "sudo"
+        assert t.escalation_user == "root"
+        assert t.escalation_password == "sudopw"
+
+    def test_escalation_columns_empty_when_missing(self, tmp_dir):
+        path = str(tmp_dir / "no_escalation.csv")
+        with open(path, "w") as f:
+            f.write("ip,username,password,os_type\n")
+            f.write("10.0.0.1,root,pw1,linux\n")
+        targets = parse_targets_csv(path)
+        assert targets[0].escalation_method is None
+        assert targets[0].escalation_user is None
+        assert targets[0].escalation_password is None
+
+    def test_escalation_partial_columns(self, tmp_dir):
+        """Some rows have escalation, some don't — backwards compatible."""
+        path = str(tmp_dir / "partial_esc.csv")
+        with open(path, "w") as f:
+            f.write("ip,username,password,os_type,escalation_method,escalation_user,escalation_password\n")
+            f.write("10.0.0.1,root,pw1,linux,sudo,root,sudopw\n")
+            f.write("10.0.0.2,admin,pw2,linux,,,\n")
+        targets = parse_targets_csv(path)
+        assert targets[0].escalation_method == "sudo"
+        assert targets[1].escalation_method is None
+
 
 class TestBuildParser:
     def test_parser_has_all_commands(self):

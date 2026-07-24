@@ -31,7 +31,10 @@ def setup_logging(verbose: bool = False) -> None:
 
 
 def parse_targets_csv(path: str) -> list[Target]:
-    """Parse a targets CSV file. Expected columns: ip,username,password,os_type."""
+    """Parse a targets CSV file.
+    Required: ip,username,password,os_type.
+    Optional: escalation_method, escalation_user, escalation_password.
+    """
     import re
     targets = []
     if not os.path.isfile(path):
@@ -66,6 +69,9 @@ def parse_targets_csv(path: str) -> list[Target]:
             username = row.get("username", "").strip()
             password = row.get("password", "").strip()
             os_type = row.get("os_type", "").strip().lower()
+            escalation_method = row.get("escalation_method", "").strip() or None
+            escalation_user = row.get("escalation_user", "").strip() or None
+            escalation_password = row.get("escalation_password", "").strip() or None
 
             if not ip:
                 print(f"Warning: skipping row {i} — missing ip", file=sys.stderr)
@@ -82,7 +88,12 @@ def parse_targets_csv(path: str) -> list[Target]:
                 )
                 os_type = "linux"
 
-            targets.append(Target(ip=ip, username=username, password=password, os_type=os_type))
+            targets.append(Target(
+                ip=ip, username=username, password=password, os_type=os_type,
+                escalation_method=escalation_method,
+                escalation_user=escalation_user,
+                escalation_password=escalation_password,
+            ))
 
     if not targets:
         print("Error: no valid targets found in CSV", file=sys.stderr)

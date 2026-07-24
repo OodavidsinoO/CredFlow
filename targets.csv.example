@@ -1,3 +1,4 @@
-ip,username,password,os_type
-192.168.1.134,test1,password1,linux
-192.168.1.131,test2,password2,linux
+ip,username,password,os_type,escalation_method,escalation_user,escalation_password
+192.168.1.134,test1,password1,linux,sudo,root,SuperSudoPw
+192.168.1.131,test2,password2,linux,,,
+192.168.1.100,Administrator,Pass123!,windows,,,

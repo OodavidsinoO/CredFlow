@@ -498,22 +498,37 @@ class NessusClient:
 
     # ── credentials builder ─────────────────────────────────────
 
+    # Map user-friendly CSV values to Nessus API values
+    _ESCALATION_MAP: dict[str, str] = {
+        "sudo": "sudo",
+        "su": "su",
+        "su+sudo": "su+sudo",
+        "dzdo": "dzdo",
+        "pbrun": "pbrun",
+        "cisco_enable": "Cisco 'enable'",
+        "k5login": ".k5login",
+        "checkpoint_gaia": "Checkpoint Gaia 'expert'",
+    }
+
+    # Elevation types that only need password (no escalation_account)
+    _ESCALATION_PASSWORD_ONLY: set[str] = {"cisco_enable", "checkpoint_gaia"}
+
     def _build_credentials(self, target: Target) -> dict:
         """Build the credentials JSON structure based on OS type."""
         if not target.password or not target.password.strip():
             logger.warning("Empty password for target %s", target.ip)
 
         if target.os_type.lower() == "linux":
+            ssh_cred: dict[str, object] = {
+                "auth_method": "password",
+                "username": target.username,
+                "password": target.password,
+            }
+            self._apply_escalation(ssh_cred, target)
             return {
                 "add": {
                     "Host": {
-                        "SSH": [
-                            {
-                                "auth_method": "password",
-                                "username": target.username,
-                                "password": target.password,
-                            }
-                        ]
+                        "SSH": [ssh_cred]
                     }
                 }
             }
@@ -537,6 +552,33 @@ class NessusClient:
                 f"Unsupported os_type '{target.os_type}' for {target.ip}. "
                 "Expected 'linux' or 'windows'."
             )
+
+    def _apply_escalation(self, ssh_cred: dict, target: Target) -> None:
+        """Mutate ssh_cred dict with privilege escalation fields if configured."""
+        if not target.escalation_method:
+            return
+
+        method = target.escalation_method.lower()
+        api_value = self._ESCALATION_MAP.get(method)
+        if api_value is None:
+            valid = ", ".join(sorted(self._ESCALATION_MAP.keys()))
+            raise CredFlowError(
+                f"Invalid escalation_method '{target.escalation_method}' for {target.ip}. "
+                f"Valid values: {valid}"
+            )
+
+        ssh_cred["elevate_privileges_with"] = api_value
+
+        if method in self._ESCALATION_PASSWORD_ONLY:
+            if target.escalation_password:
+                ssh_cred["escalation_password"] = target.escalation_password
+        else:
+            ssh_cred["escalation_account"] = target.escalation_user or "root"
+            if target.escalation_password:
+                ssh_cred["escalation_password"] = target.escalation_password
+
+        if method == "su+sudo" and target.escalation_user:
+            ssh_cred["su_user"] = target.escalation_user
 
 
 # ── helpers ─────────────────────────────────────────────────────

@@ -9,12 +9,16 @@ Nessus Professional.
 ## Language
 
 **Target**:
-A host to be scanned, defined by its IP address, a single credential pair, and its OS type.
+A host to be scanned, defined by its IP address, a single credential pair, its OS type, and optionally SSH privilege escalation settings (`escalation_method`, `escalation_user`, `escalation_password`).
 _Avoid_: Host, endpoint, node, asset
 
 **Credential**:
 A username/password pair that authenticates to exactly one Target. Each Target has exactly one Credential.
 _Avoid_: Login, account, auth
+
+**Escalation**:
+Optional SSH privilege escalation settings attached to a Target's Credential. Defined by three optional CSV columns: `escalation_method` (one of `sudo`, `su`, `su+sudo`, `dzdo`, `pbrun`, `cisco_enable`, `k5login`, `checkpoint_gaia`), `escalation_user` (account to escalate to, defaults to `root`), and `escalation_password` (the escalation password). When set, `_build_credentials()` injects the corresponding Nessus API fields (`elevate_privileges_with`, `escalation_account`, `escalation_password`, `su_user`) into the SSH credential block. Windows hosts ignore escalation settings.
+_Avoid_: sudo config, privilege elevation, PE
 
 **Scan Job**:
 The full lifecycle of scanning one Target: create a temporary Nessus scan, attach the Target's Credential, launch, poll for completion, export reports, then move the scan to Trash (or permanently delete if `--permanent-delete` is set). A Scan Job is atomic — it either completes fully or fails (with optional retry).
@@ -53,11 +57,11 @@ Removes local state database (`credflow_state.db*`) and all report files from `.
 _Avoid_: Purge, wipe, reset
 
 **Test Suite**:
-168 pytest tests across 9 test files (`test_models.py`, `test_config.py`, `test_colored_formatter.py`, `test_reporter.py`, `test_scanner_helpers.py`, `test_scanner.py`, `test_scanner_advanced.py`, `test_cli.py`, `test_state.py`, `test_worker.py`) covering all production modules. Run with `uv run pytest tests/`.
+186 pytest tests across 10 test files (`test_models.py`, `test_config.py`, `test_colored_formatter.py`, `test_reporter.py`, `test_scanner_helpers.py`, `test_scanner.py`, `test_scanner_advanced.py`, `test_cli.py`, `test_state.py`, `test_worker.py`) covering all production modules. Run with `uv run pytest tests/`.
 _Avoid_: Test harness, spec, QA script
 
 **Coverage**:
-Measured by `pytest-cov` via `uv run pytest tests/ --cov=credflow --cov-report=term`. Overall 75% (1003 statements). Highest: `models.py` (100%), `reporter.py` (98%), `config.py` (96%). Lowest: `cli.py` (35%) — CLI paths exercised only via unit-level argument parsing, not full subprocess integration.
+Measured by `pytest-cov` via `uv run pytest tests/ --cov=credflow --cov-report=term`. Overall ~75% across all production modules. Highest: `models.py` (100%), `reporter.py` (98%), `config.py` (96%). Lowest: `cli.py` (~35%) — CLI paths exercised only via unit-level argument parsing, not full subprocess integration.
 _Avoid_: Code coverage metric, line hit rate
 
 **Lint**:

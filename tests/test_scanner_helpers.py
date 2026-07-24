@@ -111,3 +111,100 @@ class TestBuildCredentials:
         t = Target(ip="10.0.0.1", username="root", password="", os_type="linux")
         client._build_credentials(t)
         assert "Empty password" in caplog.text
+
+    # ── escalation ──────────────────────────────────────────
+
+    def test_escalation_sudo(self):
+        from credflow.models import Target
+        client = self._client()
+        t = Target(ip="10.0.0.1", username="deploy", password="pw", os_type="linux",
+                   escalation_method="sudo", escalation_user="root", escalation_password="sudopw")
+        creds = client._build_credentials(t)
+        ssh = creds["add"]["Host"]["SSH"][0]
+        assert ssh["elevate_privileges_with"] == "sudo"
+        assert ssh["escalation_account"] == "root"
+        assert ssh["escalation_password"] == "sudopw"
+        # base creds still present
+        assert ssh["username"] == "deploy"
+        assert ssh["password"] == "pw"
+
+    def test_escalation_no_method_means_no_escalation(self):
+        from credflow.models import Target
+        client = self._client()
+        t = Target(ip="10.0.0.1", username="u", password="p", os_type="linux")
+        creds = client._build_credentials(t)
+        ssh = creds["add"]["Host"]["SSH"][0]
+        assert "elevate_privileges_with" not in ssh
+
+    def test_escalation_default_user_root(self):
+        """escalation_user defaults to root when not specified."""
+        from credflow.models import Target
+        client = self._client()
+        t = Target(ip="10.0.0.1", username="u", password="p", os_type="linux",
+                   escalation_method="su", escalation_password="supw")
+        creds = client._build_credentials(t)
+        ssh = creds["add"]["Host"]["SSH"][0]
+        assert ssh["escalation_account"] == "root"
+
+    def test_escalation_cisco_enable(self):
+        from credflow.models import Target
+        client = self._client()
+        t = Target(ip="10.0.0.1", username="u", password="p", os_type="linux",
+                   escalation_method="cisco_enable", escalation_password="enablepw")
+        creds = client._build_credentials(t)
+        ssh = creds["add"]["Host"]["SSH"][0]
+        assert ssh["elevate_privileges_with"] == "Cisco 'enable'"
+        assert ssh["escalation_password"] == "enablepw"
+        assert "escalation_account" not in ssh  # cisco_enable doesn't need it
+
+    def test_escalation_k5login(self):
+        from credflow.models import Target
+        client = self._client()
+        t = Target(ip="10.0.0.1", username="u", password="p", os_type="linux",
+                   escalation_method="k5login", escalation_user="admin")
+        creds = client._build_credentials(t)
+        ssh = creds["add"]["Host"]["SSH"][0]
+        assert ssh["elevate_privileges_with"] == ".k5login"
+        assert ssh["escalation_account"] == "admin"
+        assert "escalation_password" not in ssh
+
+    def test_escalation_su_sudo(self):
+        from credflow.models import Target
+        client = self._client()
+        t = Target(ip="10.0.0.1", username="u", password="p", os_type="linux",
+                   escalation_method="su+sudo", escalation_user="admin", escalation_password="supass")
+        creds = client._build_credentials(t)
+        ssh = creds["add"]["Host"]["SSH"][0]
+        assert ssh["elevate_privileges_with"] == "su+sudo"
+        assert ssh["escalation_account"] == "admin"
+        assert ssh["su_user"] == "admin"
+
+    def test_escalation_invalid_method_raises(self):
+        from credflow.models import Target
+        client = self._client()
+        t = Target(ip="10.0.0.1", username="u", password="p", os_type="linux",
+                   escalation_method="bogus", escalation_password="x")
+        with pytest.raises(CredFlowError, match="Invalid escalation_method"):
+            client._build_credentials(t)
+
+    def test_escalation_ignored_for_windows(self):
+        from credflow.models import Target
+        client = self._client()
+        t = Target(ip="10.0.0.1", username="Admin", password="p", os_type="windows",
+                   escalation_method="sudo", escalation_password="ignored")
+        creds = client._build_credentials(t)
+        win = creds["add"]["Host"]["Windows"][0]
+        assert "elevate_privileges_with" not in win
+
+    def test_escalation_all_methods_valid(self):
+        """All 8 valid escalation methods accepted."""
+        from credflow.models import Target
+        client = self._client()
+        for method in ["sudo", "su", "su+sudo", "dzdo", "pbrun",
+                        "cisco_enable", "k5login", "checkpoint_gaia"]:
+            t = Target(ip="10.0.0.1", username="u", password="p", os_type="linux",
+                       escalation_method=method, escalation_user="root",
+                       escalation_password="pw")
+            creds = client._build_credentials(t)
+            ssh = creds["add"]["Host"]["SSH"][0]
+            assert "elevate_privileges_with" in ssh, f"Missing for {method}"

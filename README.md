@@ -67,10 +67,38 @@ SOURCE_SCAN_NAME=Ubuntu-AdvancedScan
 ### Create Targets CSV
 
 ```csv
-ip,username,password,os_type
-192.168.1.134,root,password1,linux
-192.168.1.131,Administrator,Pass123!,windows
+ip,username,password,os_type,escalation_method,escalation_user,escalation_password
+192.168.1.134,root,password1,linux,sudo,root,MySudoPass
+192.168.1.131,Administrator,Pass123!,windows,,
+192.168.1.132,deploy,deploypass,linux,su,root,SuPassword
 ```
+
+**Required columns**: `ip`, `username`, `password`, `os_type`
+
+**Optional columns** (omit or leave empty to skip):
+
+| Column | Description | Default |
+|--------|-------------|--------|
+| `escalation_method` | SSH privilege escalation type | *(none)* |
+| `escalation_user` | Account to escalate to (e.g. `root`) | `root` |
+| `escalation_password` | Password for escalation | *(none)* |
+
+**Valid `escalation_method` values**:
+
+| Value | Description | Required Fields |
+|-------|-------------|----------------|
+| *(empty)* | No privilege escalation (default) | — |
+| `sudo` | sudo to escalation user | `escalation_user`†, `escalation_password` |
+| `su` | su to escalation user | `escalation_user`†, `escalation_password` |
+| `su+sudo` | su then sudo | `escalation_user`†, `escalation_password` |
+| `dzdo` | dzdo to escalation user | `escalation_user`†, `escalation_password` |
+| `pbrun` | pbrun to escalation user | `escalation_user`†, `escalation_password` |
+| `cisco_enable` | Cisco enable password | `escalation_password` |
+| `k5login` | .k5login file | `escalation_user`† |
+| `checkpoint_gaia` | Checkpoint Gaia expert mode | `escalation_password` |
+
+> † `escalation_user` defaults to `root` if omitted.
+> *Windows hosts ignore these columns — no SSH privilege escalation applies.*
 
 ### Run
 
@@ -243,6 +271,7 @@ uv run credflow.py run --targets targets.csv --template-uuid ad629e16-... \
 - **SQLite WAL**: Write-Ahead Logging mode for concurrent read safety
 - **Atomic Claims**: `BEGIN EXCLUSIVE` transaction prevents two workers grabbing the same target
 - **Per-worker Sessions**: Each worker thread gets its own `NessusClient` with independent authentication
+- **SSH privilege escalation**: Optional CSV columns (`escalation_method`, `escalation_user`, `escalation_password`) inject sudo/su/dzdo/pbrun/Cisco enable/etc. into per-host SSH credentials. 8 escalation types supported, auto-mapped to Nessus API values.
 
 ---
 
@@ -298,7 +327,7 @@ reports/
 ## Testing
 
 ```bash
-# Run full test suite (171 tests, 75% coverage)
+# Run full test suite (186 tests)
 uv run pytest tests/ -v
 
 # With coverage report

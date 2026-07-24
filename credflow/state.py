@@ -1,5 +1,6 @@
 """SQLite persistence layer for CredFlow scan progress."""
 
+import contextlib
 import sqlite3
 import threading
 from datetime import UTC, datetime
@@ -25,7 +26,7 @@ class StateManager:
         return conn
 
     def init_db(self) -> None:
-        """Create the targets table if it doesn't exist."""
+        """Create the targets table if it doesn't exist, and migrate if needed."""
         with self._lock:
             conn = sqlite3.connect(self._db_path)
             conn.execute("PRAGMA journal_mode=WAL")
@@ -45,6 +46,21 @@ class StateManager:
                     report_db TEXT
                 )
             """)
+            # Migrations: add columns that may be missing from older schemas
+            for col, col_type in [
+                ("scan_id", "INTEGER"),
+                ("error", "TEXT"),
+                ("retries", "INTEGER NOT NULL DEFAULT 0"),
+                ("started_at", "TEXT"),
+                ("completed_at", "TEXT"),
+                ("report_nessus", "TEXT"),
+                ("report_db", "TEXT"),
+                ("escalation_method", "TEXT"),
+                ("escalation_user", "TEXT"),
+                ("escalation_password", "TEXT"),
+            ]:
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute(f"ALTER TABLE targets ADD COLUMN {col} {col_type}")
             conn.commit()
             conn.close()
 
@@ -58,9 +74,11 @@ class StateManager:
             for t in targets:
                 try:
                     conn.execute(
-                        """INSERT INTO targets (ip, username, password, os_type)
-                           VALUES (?, ?, ?, ?)""",
-                        (t.ip, t.username, t.password, t.os_type),
+                        """INSERT INTO targets (ip, username, password, os_type,
+                           escalation_method, escalation_user, escalation_password)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (t.ip, t.username, t.password, t.os_type,
+                         t.escalation_method, t.escalation_user, t.escalation_password),
                     )
                     inserted += 1
                 except sqlite3.IntegrityError:
@@ -94,6 +112,9 @@ class StateManager:
                 username=row["username"],
                 password=row["password"],
                 os_type=row["os_type"],
+                escalation_method=row["escalation_method"] if "escalation_method" in row else None,  # noqa: SIM401
+                escalation_user=row["escalation_user"] if "escalation_user" in row else None,  # noqa: SIM401
+                escalation_password=row["escalation_password"] if "escalation_password" in row else None,  # noqa: SIM401
             )
 
     def mark_completed(

@@ -145,7 +145,7 @@ pending → running → completed
 ```
 
 ### Credential Safety (CRITICAL — do not regress)
-- **Target repr masks password**: `Target(ip='1.2.3.4', username='admin', password='***', os_type='linux')`
+- **Target repr masks password**: `Target(ip='1.2.3.4', username='admin', password='***', os_type='linux')` — escalation_user and escalation_password also masked
 - **No credential logging**: passwords/tokens never appear in log messages
 - **DB password logged as length only**: `logger.info("DB password for %s (length=%d)", ip, len(pw))`
 - **X-API-Token**: never logged (removed debug line from `_authenticate`)
@@ -170,6 +170,7 @@ pending → running → completed
 - **Encoding**: `utf-8-sig` (handles Windows BOM)
 - **Headers**: case-insensitive, whitespace-stripped
 - **Required columns**: `ip`, `username` — missing = row skipped with warning
+- **Optional escalation columns**: `escalation_method`, `escalation_user`, `escalation_password` — if absent, no privilege escalation. Valid `escalation_method` values: `sudo`, `su`, `su+sudo`, `dzdo`, `pbrun`, `cisco_enable`, `k5login`, `checkpoint_gaia`. Invalid values raise `CredFlowError` at scan creation.
 - **`os_type`**: must be `"linux"` or `"windows"`; defaults to `"linux"` with warning
 - **IP validation**: lenient regex `^[a-zA-Z0-9][-a-zA-Z0-9.]*$` — warns but proceeds on mismatch
 
@@ -186,20 +187,20 @@ pending → running → completed
 
 | File | Role | Key Symbols |
 |------|------|------------|
-| `credflow/scanner.py` | Core engine | `NessusClient` — `get_template_uuid()`, `get_scan_config()`, `extract_plugins_from_config()`, `resolve_disabled_families()`, `trash_scan()`, `_put()`, `_get_trash_folder_id()`; `run_scan_job()`; `CredFlowError`, `TemplateNotFoundError`, `ScanTimeoutError` |
+| `credflow/scanner.py` | Core engine | `NessusClient` — `get_template_uuid()`, `get_scan_config()`, `extract_plugins_from_config()`, `resolve_disabled_families()`, `delete_scan()`, `trash_scan()`, `_put()`, `_get_trash_folder_id()`, `_build_credentials()`, `_apply_escalation()`, `_ESCALATION_MAP`, `_ESCALATION_PASSWORD_ONLY`; `run_scan_job()`; `CredFlowError`, `TemplateNotFoundError`, `ScanTimeoutError` |
 | `credflow/state.py` | Persistence | `StateManager` — `claim_next()`, `mark_failed()`, `mark_completed()` |
 | `credflow/worker.py` | Concurrency | `run_batch()`, `worker_loop()`, `progress_reporter()`, `MAX_WORKERS_HARD_CAP` |
 | `credflow/cli.py` | CLI | `main()`, `parse_targets_csv()`, `_build_config()`, `cmd_run()` |
 | `credflow/config.py` | Configuration | `Config.from_env()`, `Config.validate()` |
-| `credflow/models.py` | Domain | `Target` (masked repr), `ScanJob` |
+| `credflow/models.py` | Domain | `Target` (masked repr, escalation fields), `ScanJob` |
 | `credflow/colored_formatter.py` | Logging colors | `ColoredFormatter` — ANSI color by level + ✓/✗ patterns, zero deps, TTY-safe |
 | `credflow/reporter.py` | Output | `print_summary()`, `generate_summary_json()` |
 | `pyproject.toml` | Build & deps | PEP 621 metadata, hatchling build, `[project.scripts]` console_scripts |
 | `credflow.py` | Standalone entry | PEP 723 inline dep metadata for `uv run credflow.py` |
 | `uv.lock` | Lockfile | Pinned dependency graph for reproducible builds |
 | `requirements.txt` | Pip fallback | Legacy pip-compatible dependency list |
-| `.env.example` | Config template | All 14 env vars with comments |
-| `targets.csv.example` | Input template | 4-column CSV format |
+| `.env.example` | Config template | All env vars + CREDFLOW_PERMANENT_DELETE |
+| `targets.csv.example` | Input template | 7-column CSV (ip,username,password,os_type + optional escalation) |
 | `CONTEXT.md` | Domain glossary | Target, Credential, Scan Job, Template, Batch, State, Worker, Report |
 
 ## Runtime/Tooling Preferences

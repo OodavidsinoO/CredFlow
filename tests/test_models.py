@@ -56,3 +56,22 @@ class TestTarget:
         r = repr(t)
         assert "p@$$w0rd!" not in r
         assert "***" in r
+
+    def test_repr_masks_escalation_password(self):
+        t = Target(ip="1.2.3.4", username="root", password="pw", os_type="linux",
+                   escalation_method="sudo", escalation_user="root", escalation_password="supersecret")
+        r = repr(t)
+        assert "supersecret" not in r
+        assert "escalation_password='***'" in r
+
+    def test_repr_masks_escalation_user(self):
+        t = Target(ip="1.2.3.4", username="root", password="pw", os_type="linux",
+                   escalation_method="sudo", escalation_user="admin", escalation_password="pw")
+        r = repr(t)
+        assert "escalation_user='***'" in r
+
+    def test_escalation_fields_default_none(self):
+        t = Target(ip="1.2.3.4", username="root", password="pw", os_type="linux")
+        assert t.escalation_method is None
+        assert t.escalation_user is None
+        assert t.escalation_password is None
