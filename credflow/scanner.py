@@ -5,14 +5,13 @@ from the Nessus Web UI's JavaScript to unlock full REST API access
 on Nessus Professional (which normally blocks scan creation via API).
 """
 
-import json
 import logging
 import os
 import re
 import secrets
 import string
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import requests
 
@@ -51,6 +50,7 @@ class NessusClient:
         if not self._verify:
             import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        self._trash_folder_id: int | None = None
         self._authenticate()
 
     # ── authentication ──────────────────────────────────────────
@@ -101,6 +101,20 @@ class NessusClient:
                 token = match.group(1)
                 logger.info("Auto-discovered X-API-Token from nessus6.js")
                 return token
+
+            # Fallback: broader pattern, then filter for UUID-like strings
+            logger.warning("Primary token regex failed; trying fallback pattern")
+            candidates = re.findall(
+                r'value:function\(\)\{return"([^"]+)"',
+                resp.text,
+            )
+            uuid_re = re.compile(
+                r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+            )
+            for candidate in candidates:
+                if uuid_re.match(candidate):
+                    logger.info("Auto-discovered X-API-Token via fallback pattern")
+                    return candidate
         except Exception as e:
             logger.warning("Could not auto-discover X-API-Token: %s", e)
 
@@ -140,7 +154,115 @@ class NessusClient:
         if resp.status_code != 200:
             logger.warning("DELETE %s → %s: %s", path, resp.status_code, resp.text[:200])
 
+    def _put(self, path: str, **kwargs) -> dict:
+        resp = self._session.put(f"{self._url}{path}", **kwargs)
+        if resp.status_code >= 400:
+            raise CredFlowError(
+                f"API error {resp.status_code} on PUT {path}: {resp.text[:300]}"
+            )
+        # Some PUT endpoints return empty 200 (no JSON body)
+        if not resp.text or not resp.text.strip():
+            return {}
+        return resp.json()
+
     # ── template ────────────────────────────────────────────────
+
+    def get_template_detail(self, uuid: str) -> dict:
+        """Fetch full template/policy detail including plugins.families.
+
+        Returns the complete template configuration, which includes
+        ``plugins.families`` — a dict keyed by family name, each containing
+        ``id``, ``count``, ``status`` (“enabled” / “disabled”), ``locked``.
+        """
+        return self._get(f"/editor/scan/templates/{uuid}")
+
+    def resolve_disabled_families(self, disabled_names: list[str], template_uuid: str) -> dict:
+        """Build a ``plugins`` payload for scan creation from a list of family names.
+
+        Fetches the template detail to map family names to their IDs, then
+        returns a dict suitable for the ``plugins`` key in POST /scans.
+        """
+        if not disabled_names:
+            return {}
+
+        detail = self.get_template_detail(template_uuid)
+        families = (detail.get("plugins") or {}).get("families", {})
+
+        name_to_id: dict[str, int] = {}
+        for family_name, fam_info in families.items():
+            name_to_id[family_name.lower()] = fam_info.get("id")
+
+        plugins: dict[str, dict] = {}
+        for name in disabled_names:
+            fam_id = name_to_id.get(name.lower())
+            if fam_id is not None:
+                plugins[name] = {"id": fam_id, "status": "disabled"}
+            else:
+                # Try substring match
+                candidates = [
+                    (fn, fi.get("id"))
+                    for fn, fi in families.items()
+                    if name.lower() in fn.lower()
+                ]
+                if candidates:
+                    fn, fam_id = candidates[0]
+                    logger.info(
+                        "Resolved '%s' → family '%s' (id=%s)", name, fn, fam_id
+                    )
+                    plugins[fn] = {"id": fam_id, "status": "disabled"}
+                else:
+                    logger.warning(
+                        "Plugin family '%s' not found in template. Available: %s",
+                        name,
+                        ", ".join(sorted(families.keys()))[:200],
+                    )
+
+        return plugins if plugins else {}
+
+    def find_scan_by_name(self, name: str) -> dict | None:
+        """Find an existing scan by name. Returns scan info dict or None."""
+        data = self._get("/scans")
+        scans = data.get("scans") or []
+        name_lower = name.lower()
+        for scan in scans:
+            if (scan.get("name") or "").lower() == name_lower:
+                return scan
+        # Substring fallback
+        for scan in scans:
+            if name_lower in (scan.get("name") or "").lower():
+                return scan
+        return None
+
+    def get_scan_config(self, scan_id: int) -> dict:
+        """Fetch the full scan configuration from the editor endpoint.
+
+        Returns the scan's policy details including ``uuid`` (template UUID),
+        ``plugins.families``, ``settings``, and ``credentials``.
+        """
+        return self._get(f"/editor/scan/{scan_id}")
+
+    def extract_plugins_from_config(self, scan_config: dict) -> dict:
+        """Extract the ``plugins`` payload from a scan/policy configuration.
+
+        Returns a dict suitable for the ``plugins`` key in POST /scans,
+        or an empty dict if no plugin families are configured.
+        """
+        plugins = scan_config.get("plugins", {})
+        if not isinstance(plugins, dict):
+            return {}
+        families = plugins.get("families", {})
+        if not families:
+            return {}
+        # Build the payload: only include families that differ from default
+        result_families: dict[str, dict] = {}
+        for name, fam in families.items():
+            if not isinstance(fam, dict):
+                continue
+            status = fam.get("status", "enabled")
+            fam_id = fam.get("id")
+            if status != "enabled" and fam_id is not None:
+                result_families[name] = {"id": fam_id, "status": status}
+        return result_families if result_families else {}
 
     def get_template_uuid(self, name: str) -> str:
         """Discover a scan template UUID by name. Falls back to config override.
@@ -191,14 +313,28 @@ class NessusClient:
 
     # ── scan lifecycle ──────────────────────────────────────────
 
-    def create_scan(self, target: Target, template_uuid: str) -> int:
-        """Create a temporary Nessus scan with single-host credentials."""
+    def create_scan(
+        self,
+        target: Target,
+        template_uuid: str,
+        plugins: dict | None = None,
+        scan_name_prefix: str = "CredFlow",
+    ) -> int:
+        """Create a temporary Nessus scan with single-host credentials.
+
+        Args:
+            target: The scan target.
+            template_uuid: Nessus template UUID.
+            plugins: Optional ``plugins`` payload (e.g. ``{"Denial of Service": {"id": 44, "status": "disabled"}}``)
+                     to control which plugin families are enabled/disabled.
+            scan_name_prefix: Prefix for the scan name; ``{prefix}-{ip}``.
+        """
         credentials = self._build_credentials(target)
-        scan_name = f"CredFlow-{target.ip}"
+        scan_name = f"{scan_name_prefix}-{target.ip}"
 
         logger.info("Creating scan '%s' for %s (%s)", scan_name, target.ip, target.os_type)
 
-        body = {
+        body: dict = {
             "uuid": template_uuid,
             "settings": {
                 "name": scan_name,
@@ -207,6 +343,11 @@ class NessusClient:
             },
             "credentials": credentials,
         }
+        if plugins:
+            body["plugins"] = plugins
+            family_names = list(plugins.keys())
+            logger.info("Plugin families configured: %s", ", ".join(family_names) or "none")
+
         result = self._post("/scans", json=body)
         scan = result.get("scan", result)
         scan_id = scan.get("id")
@@ -231,7 +372,7 @@ class NessusClient:
             details = self._get(f"/scans/{scan_id}")
             status = details.get("info", {}).get("status", "unknown")
             logger.debug("Scan %s status: %s (elapsed %ss)", scan_id, status, elapsed)
-            if status in ("completed", "aborted", "canceled", "imported"):
+            if status in ("completed", "aborted", "canceled", "imported", "paused"):
                 return status
             time.sleep(poll_interval)
             elapsed += poll_interval
@@ -269,32 +410,99 @@ class NessusClient:
         else:
             raise CredFlowError(f"Export {file_id} not ready after 300s")
 
-        # Download
-        resp = self._session.get(
-            f"{self._url}/scans/{scan_id}/export/{file_id}/download",
-            stream=True,
-        )
-        resp.raise_for_status()
-        with open(output_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
+        # Download with retry for transient errors
+        max_retries = 2
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                resp = self._session.get(
+                    f"{self._url}/scans/{scan_id}/export/{file_id}/download",
+                    stream=True,
+                )
+                resp.raise_for_status()
+                with open(output_path, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                break
+            except (requests.ConnectionError, requests.Timeout) as e:
+                last_error = e
+                if attempt < max_retries:
+                    logger.warning(
+                        "Export download attempt %d/%d failed: %s. Retrying in 1s...",
+                        attempt + 1, max_retries + 1, e,
+                    )
+                    time.sleep(1)
+                else:
+                    raise CredFlowError(
+                        f"Export download failed after {max_retries + 1} attempts: {e}"
+                    ) from e
+
+        if last_error:
+            logger.info("Export download succeeded on retry")
 
         logger.info("Export complete: %s", output_path)
         return output_path
 
-    def delete_scan(self, scan_id: int) -> None:
-        """Delete a scan (best-effort — logs but doesn't raise on failure)."""
+    def _get_trash_folder_id(self) -> int:
+        """Discover the Trash folder ID from the Nessus folders endpoint.
+
+        Cached after first call — the trash folder ID is static per Nessus instance.
+        """
+        if self._trash_folder_id is not None:
+            return self._trash_folder_id
+
+        data = self._get("/folders")
+        for folder in data.get("folders", []):
+            if folder.get("type") == "trash":
+                self._trash_folder_id = folder["id"]
+                logger.debug("Trash folder ID: %d", self._trash_folder_id)
+                return self._trash_folder_id
+
+        # Fallback: Nessus Pro always uses ID 2 for Trash
+        logger.warning("Trash folder not found via API — falling back to ID 2")
+        self._trash_folder_id = 2
+        return 2
+
+    def trash_scan(self, scan_id: int) -> None:
+        """Move a scan to the Trash folder (best-effort, logs but doesn't raise)."""
         try:
-            logger.info("Deleting scan %s", scan_id)
-            self._delete(f"/scans/{scan_id}")
-            logger.info("Scan %s deleted", scan_id)
+            trash_id = self._get_trash_folder_id()
+            logger.info("Moving scan %s to Trash (folder %d)", scan_id, trash_id)
+            self._put(f"/scans/{scan_id}/folder", json={"folder_id": trash_id})
+            logger.info("Scan %s moved to Trash", scan_id)
         except Exception as e:
-            logger.warning("Failed to delete scan %s: %s", scan_id, e)
+            logger.warning("Failed to trash scan %s: %s", scan_id, e)
+            # Fall back to permanent delete so scans don't accumulate
+            try:
+                self._delete(f"/scans/{scan_id}")
+                logger.info("Scan %s permanently deleted (trash fallback)", scan_id)
+            except Exception:
+                logger.warning("Failed to delete scan %s after trash failure", scan_id)
+
+    def delete_scan(self, scan_id: int, permanent: bool = False) -> None:
+        """Remove a scan. Default: move to Trash. If permanent=True: delete irreversibly."""
+        if permanent:
+            try:
+                logger.info("Permanently deleting scan %s", scan_id)
+                self._delete(f"/scans/{scan_id}")
+                logger.info("Scan %s permanently deleted", scan_id)
+            except Exception as e:
+                logger.warning("Failed to permanently delete scan %s: %s", scan_id, e)
+        else:
+            self.trash_scan(scan_id)
+
+    def close(self) -> None:
+        """Close the underlying HTTP session."""
+        self._session.close()
+        logger.debug("NessusClient session closed")
 
     # ── credentials builder ─────────────────────────────────────
 
     def _build_credentials(self, target: Target) -> dict:
         """Build the credentials JSON structure based on OS type."""
+        if not target.password or not target.password.strip():
+            logger.warning("Empty password for target %s", target.ip)
+
         if target.os_type.lower() == "linux":
             return {
                 "add": {
@@ -341,7 +549,7 @@ def _generate_password(length: int = 16) -> str:
 
 def _timestamp() -> str:
     """Return ISO-like timestamp safe for filenames."""
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 # ── orchestration ───────────────────────────────────────────────
@@ -352,11 +560,13 @@ def run_scan_job(
     config: Config,
     state: StateManager,
     template_uuid: str,
+    plugins: dict | None = None,
+    scan_name_prefix: str = "CredFlow",
 ) -> None:
     """Execute the full scan lifecycle for a single target."""
     scan_id = None
     try:
-        scan_id = client.create_scan(target, template_uuid)
+        scan_id = client.create_scan(target, template_uuid, plugins=plugins, scan_name_prefix=scan_name_prefix)
         client.launch_scan(scan_id)
 
         final_status = client.poll_until_done(
@@ -379,10 +589,18 @@ def run_scan_job(
             logger.info("Auto-generated DB password for %s (length=%d)", target.ip, len(db_password))
         client.export_scan(scan_id, "db", report_db, db_password=db_password)
 
-        client.delete_scan(scan_id)
+        client.delete_scan(scan_id, permanent=config.permanent_delete)
         scan_id = None
 
-        state.mark_completed(target.ip, report_nessus, report_db)
+        try:
+            state.mark_completed(target.ip, report_nessus, report_db)
+        except Exception as e:
+            logger.warning(
+                "Scan succeeded but mark_completed failed for %s: %s. "
+                "Reports saved at %s and %s but not recorded in state.",
+                target.ip, e, report_nessus, report_db,
+            )
+
         logger.info("✓ %s completed — reports saved", target.ip)
 
     except Exception as e:
@@ -394,4 +612,4 @@ def run_scan_job(
 
     finally:
         if scan_id is not None:
-            client.delete_scan(scan_id)
+            client.delete_scan(scan_id, permanent=config.permanent_delete)

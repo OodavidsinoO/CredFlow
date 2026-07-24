@@ -2,7 +2,7 @@
 
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from credflow.models import Target
 
@@ -82,7 +82,7 @@ class StateManager:
                 conn.execute("ROLLBACK")
                 conn.close()
                 return None
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             conn.execute(
                 "UPDATE targets SET status = 'running', started_at = ? WHERE ip = ?",
                 (now, row["ip"]),
@@ -100,7 +100,7 @@ class StateManager:
         self, ip: str, report_nessus: str, report_db: str
     ) -> None:
         """Mark a target as completed with report paths."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._lock:
             conn = self._get_conn()
             conn.execute(
@@ -120,7 +120,7 @@ class StateManager:
                 """UPDATE targets SET status = 'failed', error = ?,
                    retries = retries + 1, completed_at = ?
                    WHERE ip = ?""",
-                (error, datetime.now(timezone.utc).isoformat(), ip),
+                (error, datetime.now(UTC).isoformat(), ip),
             )
             row = conn.execute(
                 "SELECT retries FROM targets WHERE ip = ?", (ip,)
@@ -178,12 +178,25 @@ class StateManager:
 
     def reset_all(self) -> None:
         """Drop and recreate the targets table (fresh start)."""
+        conn = sqlite3.connect(self._db_path)
+        conn.execute("DROP TABLE IF EXISTS targets")
+        conn.commit()
+        conn.close()
+        self.init_db()
+
+    def reset_running(self) -> int:
+        """Reset all running targets back to pending (e.g. after a killed process).
+        Returns count reset."""
         with self._lock:
-            conn = sqlite3.connect(self._db_path)
-            conn.execute("DROP TABLE IF EXISTS targets")
+            conn = self._get_conn()
+            cur = conn.execute(
+                "UPDATE targets SET status = 'pending', retries = 0 "
+                "WHERE status = 'running'"
+            )
+            count = cur.rowcount
             conn.commit()
             conn.close()
-        self.init_db()
+        return count
 
     def is_empty(self) -> bool:
         """Check if the targets table has any rows."""

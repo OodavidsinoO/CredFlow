@@ -7,6 +7,10 @@ __pycache__/
 *.pyo
 .venv/
 
+# uv
+uv.lock
+*.py.lock
+
 # Reports
 reports/
 
@@ -14,6 +18,7 @@ reports/
 credflow_state.db
 *.db-journal
 *.db-wal
+*.csv
 
 # IDE
 .idea/

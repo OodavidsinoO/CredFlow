@@ -2,7 +2,20 @@
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
+
+class _SummaryEncoder(json.JSONEncoder):
+    """Custom encoder that serializes datetime objects to ISO-8601 strings.
+
+    Unlike ``default=str``, this allows us to catch unexpected types
+    early and surface serialization errors instead of silently masking them.
+    """
+
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
 
 
 def print_progress_table(progress: dict) -> None:
@@ -64,9 +77,9 @@ def print_summary(summary: dict) -> None:
 def generate_summary_json(summary: dict, reports_dir: str) -> str:
     """Write summary JSON to reports directory. Returns file path."""
     os.makedirs(reports_dir, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     path = os.path.join(reports_dir, f"summary_{ts}.json")
     with open(path, "w") as f:
-        json.dump(summary, f, indent=2, default=str)
+        json.dump(summary, f, indent=2, cls=_SummaryEncoder)
     print(f"  Summary written to: {path}")
     return path

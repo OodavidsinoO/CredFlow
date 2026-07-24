@@ -1,11 +1,16 @@
 """CLI entry point — argparse-based command-line interface."""
 
 import argparse
+import contextlib
 import csv
 import logging
 import os
+import signal
 import sys
+import threading
 
+from credflow import __version__
+from credflow.colored_formatter import ColoredFormatter
 from credflow.config import Config
 from credflow.models import Target
 from credflow.reporter import generate_summary_json, print_progress_table, print_summary
@@ -15,13 +20,14 @@ from credflow.worker import run_batch
 
 
 def setup_logging(verbose: bool = False) -> None:
-    """Configure logging for stdout."""
+    """Configure logging for stdout with ANSI color support."""
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(message)s",
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(ColoredFormatter(
+        fmt="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
-    )
+    ))
+    logging.basicConfig(level=level, handlers=[handler], force=True)
 
 
 def parse_targets_csv(path: str) -> list[Target]:
@@ -47,10 +53,15 @@ def parse_targets_csv(path: str) -> list[Target]:
             print(f"  Found: {', '.join(actual)}", file=sys.stderr)
             sys.exit(1)
 
-        # Simple IP/hostname validation pattern
-        ip_pattern = re.compile(r"^[a-zA-Z0-9][-a-zA-Z0-9.]*$")
+        # Stricter IP/hostname validation pattern
+        # Valid IPv4: 1.2.3.4, Valid hostname: host.example.com
+        ip_pattern = re.compile(
+            r"^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}"
+            r"(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$"
+            r"|^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$"
+        )
 
-        for i, row in enumerate(reader, start=2):  # header is line 1
+        for i, row in enumerate(reader, start=1):  # row 1 = first data row
             ip = row.get("ip", "").strip()
             username = row.get("username", "").strip()
             password = row.get("password", "").strip()
@@ -60,7 +71,7 @@ def parse_targets_csv(path: str) -> list[Target]:
                 print(f"Warning: skipping row {i} — missing ip", file=sys.stderr)
                 continue
             if not ip_pattern.match(ip):
-                print(f"Warning: {ip} may not be a valid hostname/IP — proceeding anyway", file=sys.stderr)
+                print(f"Warning: row {i} — '{ip}' is not a valid IP or hostname", file=sys.stderr)
             if not username:
                 print(f"Warning: skipping {ip} — missing username", file=sys.stderr)
                 continue
@@ -95,7 +106,7 @@ def cmd_check(config: Config) -> None:
         sys.exit(1)
 
 
-def cmd_run(config: Config) -> None:
+def cmd_run(config: Config, shutdown_event: threading.Event | None = None) -> None:
     """Execute the main scan workflow."""
     logger = logging.getLogger(__name__)
 
@@ -125,7 +136,7 @@ def cmd_run(config: Config) -> None:
             logger.info("Resuming — %d target(s) already completed", completed)
 
     # Run batch
-    summary = run_batch(targets, config, state)
+    summary = run_batch(targets, config, state, shutdown_event=shutdown_event)
 
     # Print results
     print_summary(summary)
@@ -169,13 +180,78 @@ def cmd_retry(config: Config) -> None:
     print("Run 'credflow run --targets <file>' to retry.")
 
 
+def cmd_clean(config: Config, force: bool = False) -> None:
+    """Remove local state database and all reports."""
+    import glob as _glob
+
+    # Collect files to delete
+    db_files = _glob.glob(config.state_db + "*")  # .db, .db-journal, .db-wal
+    report_files = []
+    reports_dir = config.reports_dir
+    if os.path.isdir(reports_dir):
+        report_files = [
+            os.path.join(reports_dir, f)
+            for f in os.listdir(reports_dir)
+            if os.path.isfile(os.path.join(reports_dir, f))
+        ]
+
+    all_files = db_files + report_files
+
+    if not all_files:
+        print("Nothing to clean.")
+        return
+
+    # Show what will be deleted
+    print("The following will be deleted:")
+    for f in sorted(db_files):
+        size = os.path.getsize(f)
+        print(f"  {f}  ({size:,} bytes)")
+    if report_files:
+        print(f"  {reports_dir}/  ({len(report_files)} file(s))")
+    print(f"\nTotal: {len(db_files)} state file(s) + {len(report_files)} report(s)")
+
+    # Double confirm
+    if not force:
+        try:
+            answer = input("\nType 'yes' to confirm deletion: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+            return
+        if answer.lower() != "yes":
+            print("Cancelled.")
+            return
+
+    # Delete
+    deleted = 0
+    for f in db_files:
+        try:
+            os.remove(f)
+            deleted += 1
+        except OSError as e:
+            print(f"  Failed to remove {f}: {e}")
+
+    for f in report_files:
+        try:
+            os.remove(f)
+            deleted += 1
+        except OSError as e:
+            print(f"  Failed to remove {f}: {e}")
+
+    # Remove reports dir if empty
+    if os.path.isdir(reports_dir):
+        with contextlib.suppress(OSError):
+            os.rmdir(reports_dir)
+
+    print(f"Cleaned {deleted} file(s).")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser."""
     parser = argparse.ArgumentParser(
         prog="credflow",
         description="Automated Nessus credentialed scanning with 1-to-1 credential isolation.",
     )
-    parser.add_argument("--version", action="version", version="credflow 1.0.0")
+    parser.add_argument("--version", action="version", version=f"credflow {__version__}")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # ---- check ----
@@ -206,6 +282,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--template-uuid", default=None, help="Scan template UUID (overrides name search)"
     )
     run_parser.add_argument(
+        "--disabled-families", default=None,
+        help="Comma-separated plugin family names to disable, e.g. 'Denial of Service,Web Crawler'"
+    )
+    run_parser.add_argument(
+        "--source-scan", default=None,
+        help="Existing scan name to use as template and naming source"
+    )
+    run_parser.add_argument(
+        "--scan-name-prefix", default=None,
+        help="Prefix for created scan names (default: source scan name or 'CredFlow')"
+    )
+    run_parser.add_argument(
         "--timeout", type=int, default=3600, help="Max seconds per scan (default: 3600)"
     )
     run_parser.add_argument(
@@ -216,6 +304,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose/debug logging"
+    )
+    run_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Validate config, CSV, and connectivity without running scans"
+    )
+    run_parser.add_argument(
+        "--permanent-delete", action="store_true",
+        help="Permanently delete scans after completion instead of moving to Trash"
     )
     _add_nessus_args(run_parser)
 
@@ -229,6 +325,19 @@ def build_parser() -> argparse.ArgumentParser:
     retry_parser = subparsers.add_parser("retry", help="Reset failed targets to pending")
     retry_parser.add_argument(
         "--state-db", default="credflow_state.db", help="Path to state database"
+    )
+
+    # ---- clean ----
+    clean_parser = subparsers.add_parser("clean", help="Remove state DB and all local reports")
+    clean_parser.add_argument(
+        "--state-db", default="credflow_state.db", help="Path to state database"
+    )
+    clean_parser.add_argument(
+        "--reports-dir", default="./reports", help="Reports directory to clean"
+    )
+    clean_parser.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Skip confirmation prompt (use with caution)"
     )
 
     return parser
@@ -261,6 +370,9 @@ def _build_config(args: argparse.Namespace) -> Config:
         ("db_password", "db_password", False),
         ("template_name", "template_name", False),
         ("template_uuid", "template_uuid", False),
+        ("disabled_families", "disabled_plugin_families", False),
+        ("source_scan", "source_scan_name", False),
+        ("scan_name_prefix", "scan_name_prefix", False),
         ("state_db", "state_db", False),
         ("url", "nessus_url", True),
         ("username", "nessus_username", True),
@@ -283,8 +395,53 @@ def _build_config(args: argparse.Namespace) -> Config:
         overrides["nessus_ssl_verify"] = False
     if hasattr(args, "no_resume") and args.no_resume:
         overrides["resume"] = False
+    if hasattr(args, "permanent_delete") and args.permanent_delete:
+        overrides["permanent_delete"] = True
 
     return Config.from_env(overrides)
+
+
+def _cmd_dry_run(config: Config, args: argparse.Namespace) -> None:
+    """Validate config, CSV, and connectivity without running scans."""
+    print("=== DRY RUN ===")
+
+    # 1. Validate config
+    print("\n[1/3] Validating configuration...")
+    errors = config.validate()
+    if errors:
+        for e in errors:
+            print(f"  FAIL: {e}")
+        print("\nConfiguration validation FAILED.")
+        sys.exit(1)
+    print("  PASS: Configuration is valid")
+    print(f"    Nessus URL: {config.nessus_url}")
+    print(f"    Username:   {config.nessus_username}")
+    print(f"    Workers:    {config.max_workers}")
+    print(f"    Retries:    {config.max_retries}")
+    print(f"    Resume:     {config.resume}")
+    if config.batch_timeout > 0:
+        print(f"    Batch timeout: {config.batch_timeout}s")
+
+    # 2. Parse CSV
+    print(f"\n[2/3] Parsing targets from {config.targets_csv}...")
+    targets = parse_targets_csv(config.targets_csv)
+    print(f"  PASS: {len(targets)} valid target(s) loaded")
+    for t in targets:
+        print(f"    {t.ip}  ({t.os_type})  {t.username}")
+
+    # 3. Test connectivity
+    print(f"\n[3/3] Testing connectivity to {config.nessus_url}...")
+    try:
+        client = NessusClient(config)
+        info = client.check_connection()
+        print(f"  PASS: Connected (version {info['version']}, scanner {info['scanner_uuid']})")
+    except Exception as e:
+        print(f"  FAIL: {e}")
+        print("\nConnectivity check FAILED.")
+        sys.exit(1)
+
+    print("\n=== Dry run complete — all checks passed ===")
+    sys.exit(0)
 
 
 def main() -> None:
@@ -301,16 +458,34 @@ def main() -> None:
     else:
         setup_logging(verbose=False)
 
+    # Set up signal handling for graceful shutdown
+    shutdown_event = threading.Event()
+
+    def _signal_handler(signum: int, frame: object) -> None:
+        sig_name = signal.Signals(signum).name
+        logger = logging.getLogger(__name__)
+        logger.warning("Received %s — initiating graceful shutdown", sig_name)
+        shutdown_event.set()
+
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+
     config = _build_config(args)
 
     if args.command == "check":
         cmd_check(config)
     elif args.command == "run":
-        cmd_run(config)
+        dry_run = getattr(args, "dry_run", False)
+        if dry_run:
+            _cmd_dry_run(config, args)
+        else:
+            cmd_run(config, shutdown_event=shutdown_event)
     elif args.command == "status":
         cmd_status(config)
     elif args.command == "retry":
         cmd_retry(config)
+    elif args.command == "clean":
+        cmd_clean(config, force=getattr(args, "yes", False))
     else:
         parser.print_help()
         sys.exit(1)
