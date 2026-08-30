@@ -92,8 +92,51 @@ class TestParseNessusReport:
         with pytest.raises(ReportParseError):
             parse_nessus_report(str(path))
 
-    def test_wrong_root_tag_raises(self, tmp_dir):
-        path = tmp_dir / "wrong.nessus"
-        path.write_text("<NotNessus></NotNessus>")
-        with pytest.raises(ReportParseError):
-            parse_nessus_report(str(path))
+    def test_out_of_range_severity_clamped(self, tmp_dir):
+        path = tmp_dir / "sev.nessus"
+        path.write_text(
+            '<?xml version="1.0"?><NessusClientData_v2><Report name="x">'
+            '<ReportHost name="h"><ReportItem port="0" severity="9" '
+            'pluginID="1" pluginName="Weird" pluginFamily="Misc.">'
+            "</ReportItem></ReportHost></Report></NessusClientData_v2>"
+        )
+        summary = parse_nessus_report(str(path))
+        assert summary["severity_counts"]["critical"] == 1
+        assert summary["total_findings"] == 1
+
+    def test_non_numeric_attributes_do_not_crash(self, tmp_dir):
+        path = tmp_dir / "badattr.nessus"
+        path.write_text(
+            '<?xml version="1.0"?><NessusClientData_v2><Report name="x">'
+            '<ReportHost name="h"><ReportItem port="abc" severity="x" '
+            'pluginID="notanumber" pluginName="Weird" pluginFamily="Misc.">'
+            "</ReportItem></ReportHost></Report></NessusClientData_v2>"
+        )
+        summary = parse_nessus_report(str(path))
+        assert summary["total_findings"] == 1
+        assert summary["severity_counts"]["info"] == 1
+        assert summary["open_ports"] == []
+
+    def test_namespaced_root_accepted(self, tmp_dir):
+        path = tmp_dir / "ns.nessus"
+        path.write_text(
+            '<?xml version="1.0"?>'
+            '<NessusClientData_v2 xmlns="http://www.nessus.org/nessus">'
+            '<Report name="x"><ReportHost name="h">'
+            '<ReportItem port="0" severity="0" pluginID="1" '
+            'pluginName="P" pluginFamily="F"></ReportItem>'
+            "</ReportHost></Report></NessusClientData_v2>"
+        )
+        summary = parse_nessus_report(str(path))
+        assert summary["total_findings"] == 1
+
+    def test_scan_date_uses_host_end(self, tmp_dir):
+        path = tmp_dir / "date.nessus"
+        path.write_text(
+            '<?xml version="1.0"?><NessusClientData_v2><Report name="x">'
+            '<ReportHost name="h"><HostProperties>'
+            '<tag name="HOST_END">2026-08-30T11:22:33Z</tag>'
+            "</HostProperties></ReportHost></Report></NessusClientData_v2>"
+        )
+        summary = parse_nessus_report(str(path))
+        assert summary["scan_date"] == "2026-08-30T11:22:33Z"

@@ -82,7 +82,7 @@ def _print_vuln_summaries(summary: dict) -> None:
     if not reports:
         return
 
-    has_summaries = any(r.get("summary") for r in reports)
+    has_summaries = any(r.get("summary") or r.get("summary_error") for r in reports)
     if not has_summaries:
         return
 

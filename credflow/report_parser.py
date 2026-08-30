@@ -25,6 +25,7 @@ _HOST_PROPERTY_KEYS = {
     "operating-system": "os",
     "os-name": "os",
     "system-type": "system_type",
+    "HOST_END": "host_end",
 }
 
 
@@ -39,7 +40,9 @@ def _severity_name(severity: int) -> str:
 def _parse_host_properties(host: ET.Element) -> dict:
     """Extract interesting HostProperties from a ReportHost element."""
     props: dict[str, str] = {}
-    for tag in host.findall("HostProperties/tag"):
+    for tag in host.iter():
+        if tag.tag.rsplit("}", 1)[-1] != "tag":
+            continue
         name = tag.get("name", "")
         mapped = _HOST_PROPERTY_KEYS.get(name)
         if mapped and tag.text:
@@ -53,14 +56,21 @@ def _parse_report_item(item: ET.Element) -> dict:
         severity = int(item.get("severity", "0"))
     except ValueError:
         severity = 0
+    severity = min(max(severity, 0), 4)  # clamp out-of-range values
+
+    def _to_int(value: str | None, default: int = 0) -> int:
+        try:
+            return int(value or default)
+        except ValueError:
+            return default
 
     finding: dict = {
-        "plugin_id": int(item.get("pluginID", "0") or 0),
+        "plugin_id": _to_int(item.get("pluginID")),
         "name": item.get("pluginName", ""),
         "family": item.get("pluginFamily", ""),
         "severity": _severity_name(severity),
         "severity_value": severity,
-        "port": int(item.get("port", "0") or 0),
+        "port": _to_int(item.get("port")),
         "protocol": item.get("protocol", ""),
         "service": item.get("svc_name", ""),
     }
@@ -87,12 +97,14 @@ def parse_nessus_report(path: str) -> dict:
         raise ReportParseError(f"Could not parse {path}: {e}") from e
 
     root = tree.getroot()
-    if root.tag != "NessusClientData_v2":
+    root_name = root.tag.rsplit("}", 1)[-1]  # tolerate XML namespaces
+    if root_name != "NessusClientData_v2":
         raise ReportParseError(
             f"{path} is not a NessusClientData_v2 report (root tag: {root.tag})"
         )
 
-    hosts = root.findall("Report/ReportHost")
+    # Namespace-tolerant traversal: match by local name
+    hosts = [e for e in root.iter() if e.tag.rsplit("}", 1)[-1] == "ReportHost"]
     if not hosts:
         logger.warning("No ReportHost elements found in %s", path)
         return _empty_summary(path)
@@ -102,8 +114,9 @@ def parse_nessus_report(path: str) -> dict:
     host_props: dict = {}
     for host in hosts:
         host_props.update(_parse_host_properties(host))
-        for item in host.findall("ReportItem"):
-            findings.append(_parse_report_item(item))
+        for item in host.iter():
+            if item.tag.rsplit("}", 1)[-1] == "ReportItem":
+                findings.append(_parse_report_item(item))
 
     findings.sort(key=lambda f: (f["severity_value"], f.get("cvss", 0)), reverse=True)
 
@@ -126,11 +139,14 @@ def parse_nessus_report(path: str) -> dict:
     # Top findings: everything above info severity, capped at 20
     top = [f for f in findings if f["severity_value"] > 0][:20]
 
+    # Prefer the real scan end time from HostProperties; fall back to parse time
+    scan_date = host_props.get("host_end") or datetime.now(UTC).isoformat()
+
     summary = {
         "ip": host_props.get("ip", ""),
         "hostname": host_props.get("hostname") or host_props.get("fqdn", ""),
         "os": host_props.get("os", ""),
-        "scan_date": datetime.now(UTC).isoformat(),
+        "scan_date": scan_date,
         "total_findings": len(findings),
         "severity_counts": severity_counts,
         "open_ports": ports,
