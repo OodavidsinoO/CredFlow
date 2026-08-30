@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from credflow.config import Config
+from credflow.report_parser import ReportParseError, parse_nessus_report
 from credflow.scanner import NessusClient, run_scan_job
 from credflow.state import StateManager
 
@@ -231,11 +232,29 @@ def _build_summary(state: StateManager) -> dict:
     progress = state.get_progress()
     failures = state.get_failures()
     reports = state.get_completed_reports()
+
+    # Parse each completed .nessus report into a vulnerability summary.
+    # A parse failure degrades to a note — the batch result is still reported.
+    report_summaries = []
+    for r in reports:
+        entry = {
+            "ip": r["ip"],
+            "report_nessus": r["report_nessus"],
+            "report_db": r["report_db"],
+        }
+        try:
+            entry["summary"] = parse_nessus_report(r["report_nessus"])
+        except ReportParseError as e:
+            logger.warning("Could not parse report for %s: %s", r["ip"], e)
+            entry["summary"] = None
+            entry["summary_error"] = str(e)
+        report_summaries.append(entry)
+
     return {
         "total": sum(progress.values()),
         "completed": progress.get("completed", 0),
         "failed": progress.get("failed", 0),
         "pending": progress.get("pending", 0),
         "failures": failures,
-        "reports": reports,
+        "reports": report_summaries,
     }

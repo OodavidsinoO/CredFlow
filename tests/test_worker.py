@@ -75,6 +75,43 @@ class TestBuildSummary:
         assert summary["pending"] == 1
         assert summary["total"] == 3
 
+    def test_parses_nessus_report_into_summary(self, state_db_path, sample_targets, tmp_dir):
+        state = StateManager(state_db_path)
+        state.load_targets(sample_targets[:1])
+        t = state.claim_next()
+
+        report = tmp_dir / "r.nessus"
+        report.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<NessusClientData_v2><Report name="x"><ReportHost name="10.0.0.1">'
+            '<HostProperties><tag name="host-ip">10.0.0.1</tag></HostProperties>'
+            '<ReportItem port="22" svc_name="ssh" protocol="tcp" severity="3" '
+            'pluginID="1" pluginName="Bad SSH" pluginFamily="Misc.">'
+            "<synopsis>s</synopsis></ReportItem>"
+            "</ReportHost></Report></NessusClientData_v2>"
+        )
+        state.mark_completed(t.ip, str(report), "/tmp/r.db")
+
+        summary = _build_summary(state)
+        entry = summary["reports"][0]
+        assert entry["summary"]["total_findings"] == 1
+        assert entry["summary"]["severity_counts"]["high"] == 1
+        assert entry["summary"]["top_findings"][0]["name"] == "Bad SSH"
+
+    def test_unparseable_report_degrades_to_error_note(self, state_db_path, sample_targets, tmp_dir):
+        state = StateManager(state_db_path)
+        state.load_targets(sample_targets[:1])
+        t = state.claim_next()
+
+        report = tmp_dir / "r.nessus"
+        report.write_text("<not-xml>")
+        state.mark_completed(t.ip, str(report), "/tmp/r.db")
+
+        summary = _build_summary(state)
+        entry = summary["reports"][0]
+        assert entry["summary"] is None
+        assert "summary_error" in entry
+
 
 # ── worker_loop ──────────────────────────────────────────────────
 

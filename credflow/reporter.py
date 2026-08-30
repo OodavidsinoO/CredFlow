@@ -73,6 +73,57 @@ def print_summary(summary: dict) -> None:
                 print(f"      db:     {r['report_db']}")
         print()
 
+    _print_vuln_summaries(summary)
+
+
+def _print_vuln_summaries(summary: dict) -> None:
+    """Print per-host vulnerability summaries from parsed .nessus reports."""
+    reports = summary.get("reports", [])
+    if not reports:
+        return
+
+    has_summaries = any(r.get("summary") for r in reports)
+    if not has_summaries:
+        return
+
+    print("  Vulnerability Summary")
+    print("  " + "-" * 46)
+    for r in reports:
+        s = r.get("summary")
+        if not s:
+            if r.get("summary_error"):
+                print(f"    {r['ip']}: summary unavailable ({r['summary_error']})")
+            continue
+
+        counts = s.get("severity_counts", {})
+        host = s.get("hostname") or s.get("ip") or r["ip"]
+        print(f"    {host}:")
+        print(
+            f"      critical: {counts.get('critical', 0)}  "
+            f"high: {counts.get('high', 0)}  "
+            f"medium: {counts.get('medium', 0)}  "
+            f"low: {counts.get('low', 0)}  "
+            f"info: {counts.get('info', 0)}"
+        )
+        ports = s.get("open_ports", [])
+        if ports:
+            port_str = ", ".join(
+                f"{p['port']}/{p['protocol']}" if p.get("protocol") else str(p["port"])
+                for p in ports[:10]
+            )
+            if len(ports) > 10:
+                port_str += f" (+{len(ports) - 10} more)"
+            print(f"      open ports: {port_str}")
+        top = s.get("top_findings", [])
+        if top:
+            print("      top findings:")
+            for f in top[:5]:
+                print(
+                    f"        [{f['severity']}] {f['name']}"
+                    + (f" (port {f['port']})" if f.get("port") else "")
+                )
+    print()
+
 
 def generate_summary_json(summary: dict, reports_dir: str) -> str:
     """Write summary JSON to reports directory. Returns file path."""
