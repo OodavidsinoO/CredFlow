@@ -268,7 +268,7 @@ uv run credflow.py run --targets targets.csv --template-uuid ad629e16-... \
 ### Key Design Decisions
 
 - **Source scan cloning**: Fetches an existing scan's full policy via `/editor/scan/{id}` — inherits template, plugin families, scalar settings (e.g. `max_checks_per_host`), and naming. Sensitive settings (SMTP, HTTP headers) are excluded. The primary workflow.
-- **X-API-Version: 2**: Sent on every request — required since Nessus 19.x for `plugins.families` data and for `plugins` payloads to take effect in scan creation.
+- **X-API-Version: 2**: Sent on every authenticated API request — required since Nessus 19.x for `plugins.families` data and for `plugins` payloads to take effect in scan creation.
 - **Vulnerability summaries**: Each completed `.nessus` report is parsed into a per-host summary (severity counts, open ports, top findings) shown in the batch summary and written to `summary_*.json`.
 - **Trash by default**: Completed scans are moved to the Nessus Trash folder (not permanently deleted). Use `--permanent-delete` or `CREDFLOW_PERMANENT_DELETE=true` to override. Trash folder ID is auto-discovered via `GET /folders`.
 - **uv package manager**: 10-100x faster than pip; three entry methods (standalone script / project / console_script)
