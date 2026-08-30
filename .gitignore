@@ -29,3 +29,6 @@ credflow_state.db
 # OS
 .DS_Store
 Thumbs.db
+
+# Test coverage data
+.coverage
