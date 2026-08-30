@@ -100,6 +100,7 @@ class TestAuthenticate:
             client = NessusClient(Config(**config_dict))
             assert "X-Cookie" in client._session.headers
             assert "X-API-Token" in client._session.headers
+            assert client._session.headers["X-API-Version"] == "2"
 
     def test_login_failure(self, config_dict, base_url):
         with responses.RequestsMock() as rsps:

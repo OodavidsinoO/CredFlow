@@ -11,7 +11,7 @@
 CredFlow's REST API usage remains **largely compatible** with Nessus 19.18.4. All core lifecycle endpoints (session auth, template listing, scan create/launch/poll/export/delete, trash, folders) work as before. However, **two significant behavioral changes** were confirmed empirically and are not covered by official documentation:
 
 1. **Template UUIDs are now 52-character strings** (e.g. `731a8e52-3ea6-a291-ec0a-d2ff0619c19d7bd788d6be818b65`) instead of 36-char UUIDs. CredFlow treats these as opaque strings, so this is **not breaking** — but any code that validates UUID format would break.
-2. **The `plugins.families` structure is no longer returned** by `GET /editor/scan/templates/{uuid}` or `GET /editor/scan/{id}`, and a `plugins` payload passed to `POST /scans` is **accepted but does not take effect**. CredFlow's `resolve_disabled_families()` and `extract_plugins_from_config()` depend on `plugins.families` and will silently produce empty plugin payloads.
+2. **The `plugins.families` structure is no longer returned** by `GET /editor/scan/templates/{uuid}` or `GET /editor/scan/{id}`, and a `plugins` payload passed to `POST /scans` is **accepted but does not take effect** — **unless the request carries the `X-API-Version: 2` header**. With that header (which the web UI sends), `plugins.families` is fully returned and `plugins` payloads in `POST /scans` and `POST /policies` take effect. **RESOLVED:** CredFlow now sends `X-API-Version: 2` on every request (commit 6f2f9e0), restoring plugin-family disabling on 19.x. Verified end-to-end: scan created via CredFlow with `--disabled-families "Denial of Service"` shows `status: "disabled"` in the scan's editor config.
 
 A third notable change (documented by Tenable in 10.12.0 release notes): **unauthenticated file downloads now require a session token** — confirmed empirically (download without auth → HTTP 401).
 
@@ -92,10 +92,7 @@ A third notable change (documented by Tenable in 10.12.0 release notes): **unaut
 
 1. **No urgent code change required** for the core scan lifecycle — create/launch/poll/export/delete/trash all work on 19.18.4.
 
-2. **Investigate the `plugins.families` regression (highest priority).** CredFlow's plugin-family disabling feature (`resolve_disabled_families`, `extract_plugins_from_config`, and the `plugins` payload in `create_scan`) silently no longer functions on 19.x. Options:
-   - Confirm whether plugin-family control moved to a different API surface (e.g. policy-based, or a new `plugins` structure) — not found in official docs.
-   - If the feature is required, treat this as a functional gap and either surface a warning when `plugins.families` is absent, or find the new mechanism.
-   - At minimum, add a log/warning when `resolve_disabled_families` returns `{}` despite non-empty `disabled_names`, so the silent regression becomes visible.
+2. **`plugins.families` regression — RESOLVED.** The root cause was the missing `X-API-Version: 2` request header (the web UI sends it; CredFlow did not). With the header, `plugins.families` is returned by editor endpoints and `plugins` payloads take effect in `POST /scans` and `POST /policies`. CredFlow now sends the header on every request. Verified end-to-end on the live server: `--disabled-families "Denial of Service"` produces a scan whose editor config shows `Denial of Service: {status: "disabled"}`.
 
 3. **Do not add UUID-format validation.** Template UUIDs are now 52-char; keep treating them as opaque strings. If any future code validates UUID format, it must accept the 52-char form.
 

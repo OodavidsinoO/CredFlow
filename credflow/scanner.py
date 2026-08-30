@@ -71,6 +71,9 @@ class NessusClient:
         if not session_token:
             raise CredFlowError("Login response missing token")
         self._session.headers["X-Cookie"] = f"token={session_token}"
+        # API v2: required since Nessus 19.x for plugins.families data and
+        # for plugins payloads in POST /scans to take effect
+        self._session.headers["X-API-Version"] = "2"
         logger.info("Session established")
 
         # Step 2: Get or discover the X-API-Token
