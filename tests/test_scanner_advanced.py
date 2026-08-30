@@ -170,12 +170,31 @@ class TestExtractSettingsFromConfig:
             assert "description" not in result
             assert result["max_hosts_per_scan"] == "100"
 
-    def test_empty_settings(self, config_dict, base_url):
+    def test_excludes_sensitive_settings(self, config_dict, base_url):
         with responses.RequestsMock() as rsps:
             _full_auth(rsps, base_url)
             client = NessusClient(Config(**config_dict))
-            assert client.extract_settings_from_config({}) == {}
-            assert client.extract_settings_from_config({"settings": "not-a-dict"}) == {}
+            scan_config = {
+                "settings": {
+                    "report": {
+                        "groups": [{
+                            "inputs": [
+                                {"id": "smtp_from", "type": "entry", "default": "admin@corp.com"},
+                                {"id": "smtp_password", "type": "password", "default": "hunter2"},
+                                {"id": "smtp_to", "type": "entry", "default": "sec@corp.com"},
+                                {"id": "custom_http_header_value", "type": "entry", "default": "Bearer abc123"},
+                                {"id": "max_checks_per_host", "type": "small-entry", "default": "25"},
+                            ]
+                        }]
+                    }
+                }
+            }
+            result = client.extract_settings_from_config(scan_config)
+            assert "smtp_from" not in result
+            assert "smtp_password" not in result
+            assert "smtp_to" not in result
+            assert "custom_http_header_value" not in result
+            assert result["max_checks_per_host"] == "25"
 
 
 class TestFindScanByNameSourceScan:

@@ -276,13 +276,20 @@ class NessusClient:
         a flat dict suitable for the ``settings`` key in POST /scans.
 
         Per-scan fields (name, text_targets, file_targets, enabled, launch,
-        description) are excluded — the caller sets those.
+        description) and sensitive fields (SMTP credentials, notification
+        recipients, custom HTTP headers) are excluded — the caller sets those.
         """
         scalar_types = {
-            "entry", "small-entry", "checkbox", "password", "radio",
+            "entry", "small-entry", "checkbox", "radio",
             "ui_radio", "dropdown", "small-textarea", "textarea", "file",
         }
-        excluded = {"name", "text_targets", "file_targets", "enabled", "launch", "description"}
+        excluded = {
+            "name", "text_targets", "file_targets", "enabled", "launch", "description",
+            # Sensitive / notification settings — never inherit secrets
+            "smtp_from", "smtp_to", "smtp_password", "smtp_domain",
+            "email_lists", "email_recipients", "email_cc", "email_bcc",
+            "custom_http_header", "custom_http_header_name", "custom_http_header_value",
+        }
 
         settings = scan_config.get("settings", {})
         if not isinstance(settings, dict):
