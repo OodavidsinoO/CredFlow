@@ -141,8 +141,13 @@ CredFlow will:
 1. Fetch that scan's full configuration via the API (`/editor/scan/{id}`)
 2. Use its **template** (e.g. Advanced Scan)
 3. Copy its **plugin family settings** (e.g. Denial of Service → disabled)
-4. Default the scan name to `Ubuntu-AdvancedScan-{IP}`
-5. Add per-host credentials from your CSV on top
+4. Copy its **scalar settings** (e.g. `max_checks_per_host`, safe checks, discovery options)
+5. Default the scan name to `Ubuntu-AdvancedScan-{IP}`
+6. Add per-host credentials from your CSV on top
+
+> **Sensitive settings are NOT inherited**: SMTP credentials, notification
+> recipients, and custom HTTP header values are excluded from cloning to
+> prevent secret leakage into per-host scans.
 
 Store the source scan name in `.env` to skip the repetitive CLI flag:
 
@@ -262,7 +267,9 @@ uv run credflow.py run --targets targets.csv --template-uuid ad629e16-... \
 
 ### Key Design Decisions
 
-- **Source scan cloning**: Fetches an existing scan's full policy via `/editor/scan/{id}` — inherits template, plugin families, and naming. The primary workflow.
+- **Source scan cloning**: Fetches an existing scan's full policy via `/editor/scan/{id}` — inherits template, plugin families, scalar settings (e.g. `max_checks_per_host`), and naming. Sensitive settings (SMTP, HTTP headers) are excluded. The primary workflow.
+- **X-API-Version: 2**: Sent on every request — required since Nessus 19.x for `plugins.families` data and for `plugins` payloads to take effect in scan creation.
+- **Vulnerability summaries**: Each completed `.nessus` report is parsed into a per-host summary (severity counts, open ports, top findings) shown in the batch summary and written to `summary_*.json`.
 - **Trash by default**: Completed scans are moved to the Nessus Trash folder (not permanently deleted). Use `--permanent-delete` or `CREDFLOW_PERMANENT_DELETE=true` to override. Trash folder ID is auto-discovered via `GET /folders`.
 - **uv package manager**: 10-100x faster than pip; three entry methods (standalone script / project / console_script)
 - **PEP 723 inline deps**: `credflow.py` declares its own dependencies — `uv run credflow.py` auto-installs in an ephemeral venv
@@ -311,6 +318,24 @@ reports/
 └── summary_20260724T075047Z.json            # Batch summary
 ```
 
+The batch summary includes a **per-host vulnerability summary** parsed from
+each `.nessus` report:
+
+```
+  Vulnerability Summary
+  ----------------------------------------------
+    hermes-agent:
+      critical: 0  high: 0  medium: 0  low: 1  info: 58
+      open ports: 22/tcp
+      top findings:
+        [low] ICMP Timestamp Request Remote Date Disclosure
+```
+
+Each report entry in `summary_*.json` carries a `summary` object with
+`severity_counts`, `open_ports`, `top_findings`, and host info (`ip`,
+`hostname`, `os`, `scan_date`). Unparseable reports degrade to a
+`summary_error` note instead of failing the batch.
+
 ---
 
 ## Security
@@ -327,7 +352,7 @@ reports/
 ## Testing
 
 ```bash
-# Run full test suite (186 tests)
+# Run full test suite (202 tests)
 uv run pytest tests/ -v
 
 # With coverage report

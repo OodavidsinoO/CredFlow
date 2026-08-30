@@ -29,7 +29,7 @@ A Nessus scan policy template (e.g., "Advanced Scan") identified by UUID. Used a
 _Avoid_: Policy, profile, preset
 
 **Source Scan**:
-A pre-configured scan in Nessus (e.g. `Ubuntu-AdvancedScan`) that CredFlow clones for every target. The source scan's template UUID, plugin family settings, and name are inherited by all created scans. This is the primary workflow — template-only scan creation does not inherit plugin family settings.
+A pre-configured scan in Nessus (e.g. `Ubuntu-AdvancedScan`) that CredFlow clones for every target. The source scan's template UUID, plugin family settings, scalar settings (e.g. `max_checks_per_host`), and name are inherited by all created scans. Sensitive settings (SMTP credentials, notification recipients, custom HTTP headers) are excluded from inheritance. This is the primary workflow — template-only scan creation does not inherit plugin family settings.
 _Avoid_: Reference scan, base scan
 
 **Plugin Family**:
@@ -49,19 +49,23 @@ A concurrent execution unit that claims one Target at a time from the State and 
 _Avoid_: Thread, process, runner
 
 **Report**:
-The output of a completed Scan Job: a `.nessus` file (XML vulnerability data) and a `.db` file (encrypted Nessus database). Both are saved to `./reports/` with the Target's IP and timestamp in the filename.
+The output of a completed Scan Job: a `.nessus` file (XML vulnerability data) and a `.db` file (encrypted Nessus database). Both are saved to `./reports/` with the Target's IP and timestamp in the filename. Each `.nessus` report is parsed into a **Vulnerability Summary** (severity counts, open ports, top findings) shown in the batch summary and embedded in `summary_*.json`.
 _Avoid_: Export, output, result
+
+**Vulnerability Summary**:
+The parsed per-host digest of a `.nessus` report, produced by `report_parser.py`: `severity_counts` (critical/high/medium/low/info), `open_ports` (deduplicated port/protocol/service triples), `top_findings` (severity > 0, capped at 20, sorted by severity then CVSS), and host info (`ip`, `hostname`, `os`, `scan_date` from `HOST_END`). Unparseable reports degrade to a `summary_error` note rather than failing the batch.
+_Avoid_: Findings digest, report stats, scan results
 
 **Clean**:
 Removes local state database (`credflow_state.db*`) and all report files from `./reports/`. Requires double confirmation (`yes`) unless `--yes` is passed. Does not touch the Nessus server.
 _Avoid_: Purge, wipe, reset
 
 **Test Suite**:
-186 pytest tests across 10 test files (`test_models.py`, `test_config.py`, `test_colored_formatter.py`, `test_reporter.py`, `test_scanner_helpers.py`, `test_scanner.py`, `test_scanner_advanced.py`, `test_cli.py`, `test_state.py`, `test_worker.py`) covering all production modules. Run with `uv run pytest tests/`.
+202 pytest tests across 11 test files (`test_models.py`, `test_config.py`, `test_colored_formatter.py`, `test_reporter.py`, `test_scanner_helpers.py`, `test_scanner.py`, `test_scanner_advanced.py`, `test_report_parser.py`, `test_cli.py`, `test_state.py`, `test_worker.py`) covering all production modules. Run with `uv run pytest tests/`.
 _Avoid_: Test harness, spec, QA script
 
 **Coverage**:
-Measured by `pytest-cov` via `uv run pytest tests/ --cov=credflow --cov-report=term`. Overall ~75% across all production modules. Highest: `models.py` (100%), `reporter.py` (98%), `config.py` (96%). Lowest: `cli.py` (~35%) — CLI paths exercised only via unit-level argument parsing, not full subprocess integration.
+Measured by `pytest-cov` via `uv run pytest tests/ --cov=credflow --cov-report=term`. Overall ~77% across all production modules. Highest: `models.py` (100%), `report_parser.py` (99%), `colored_formatter.py` (97%). Lowest: `cli.py` (~35%) — CLI paths exercised only via unit-level argument parsing, not full subprocess integration.
 _Avoid_: Code coverage metric, line hit rate
 
 **Lint**:

@@ -35,9 +35,11 @@ CredFlow is a production-grade automated Nessus vulnerability scanning tool that
                        │
                        ▼
             _build_summary() → reporter.py
+            (parses each .nessus via report_parser.py)
                        │
                        ▼
             print_summary() + generate_summary_json()
+            (per-host vulnerability summary)
 ```
 
 ### Auth Flow
@@ -45,7 +47,8 @@ CredFlow is a production-grade automated Nessus vulnerability scanning tool that
 2. Set `X-Cookie: token=<token>`
 3. If `NESSUS_API_TOKEN` empty: `GET /nessus6.js` → regex `value:function(){return"UUID"}` → extract static X-API-Token
 4. Set `X-API-Token: <UUID>`
-5. Both headers required for write operations (create/launch/delete scans)
+5. Set `X-API-Version: 2` — **required since Nessus 19.x**: without it, editor endpoints omit `plugins.families` and `plugins` payloads in `POST /scans` are silently ignored
+6. All three headers required for write operations (create/launch/delete scans)
 
 ### Concurrency Model
 - **ThreadPoolExecutor**: 1–50 workers (hard cap `MAX_WORKERS_HARD_CAP = 50`)
@@ -187,13 +190,14 @@ pending → running → completed
 
 | File | Role | Key Symbols |
 |------|------|------------|
-| `credflow/scanner.py` | Core engine | `NessusClient` — `get_template_uuid()`, `get_scan_config()`, `extract_plugins_from_config()`, `resolve_disabled_families()`, `delete_scan()`, `trash_scan()`, `_put()`, `_get_trash_folder_id()`, `_build_credentials()`, `_apply_escalation()`, `_ESCALATION_MAP`, `_ESCALATION_PASSWORD_ONLY`; `run_scan_job()`; `CredFlowError`, `TemplateNotFoundError`, `ScanTimeoutError` |
+| `credflow/scanner.py` | Core engine | `NessusClient` — `get_template_uuid()`, `get_scan_config()`, `extract_plugins_from_config()`, `extract_settings_from_config()`, `resolve_disabled_families()`, `delete_scan()`, `trash_scan()`, `_put()`, `_get_trash_folder_id()`, `_build_credentials()`, `_apply_escalation()`, `_ESCALATION_MAP`, `_ESCALATION_PASSWORD_ONLY`; `run_scan_job()`; `CredFlowError`, `TemplateNotFoundError`, `ScanTimeoutError` |
 | `credflow/state.py` | Persistence | `StateManager` — `claim_next()`, `mark_failed()`, `mark_completed()` |
 | `credflow/worker.py` | Concurrency | `run_batch()`, `worker_loop()`, `progress_reporter()`, `MAX_WORKERS_HARD_CAP` |
 | `credflow/cli.py` | CLI | `main()`, `parse_targets_csv()`, `_build_config()`, `cmd_run()` |
 | `credflow/config.py` | Configuration | `Config.from_env()`, `Config.validate()` |
 | `credflow/models.py` | Domain | `Target` (masked repr, escalation fields), `ScanJob` |
 | `credflow/colored_formatter.py` | Logging colors | `ColoredFormatter` — ANSI color by level + ✓/✗ patterns, zero deps, TTY-safe |
+| `credflow/report_parser.py` | Report parsing | `parse_nessus_report()` — parses `.nessus` XML into per-host vulnerability summary (severity counts, open ports, top findings); `ReportParseError` |
 | `credflow/reporter.py` | Output | `print_summary()`, `generate_summary_json()` |
 | `pyproject.toml` | Build & deps | PEP 621 metadata, hatchling build, `[project.scripts]` console_scripts |
 | `credflow.py` | Standalone entry | PEP 723 inline dep metadata for `uv run credflow.py` |
@@ -219,7 +223,7 @@ pending → running → completed
 
 ## Testing & QA
 
-- **Test suite**: 168 pytest tests (75% coverage) covering all modules
+- **Test suite**: 202 pytest tests (77% coverage) covering all modules
 - **Run tests**: `uv run pytest tests/ -v`
 - **Run with coverage**: `uv run pytest tests/ --cov=credflow --cov-report=term`
 - **Lint**: `uv run ruff check credflow/ tests/` — 0 violations
@@ -228,14 +232,15 @@ pending → running → completed
 
 | Module | Stmts | Coverage |
 |--------|-------|----------|
-| `models.py` | 9 | **100%** |
-| `reporter.py` | 58 | **98%** |
+| `models.py` | 18 | **100%** |
+| `report_parser.py` | 78 | **99%** |
 | `colored_formatter.py` | 32 | **97%** |
-| `config.py` | 96 | **96%** |
-| `state.py` | 111 | **95%** |
-| `scanner.py` | 283 | **93%** |
-| `worker.py` | 125 | **79%** |
-| `cli.py` | 286 | **35%** |
+| `config.py` | 98 | **96%** |
+| `state.py` | 115 | **96%** |
+| `scanner.py` | 363 | **93%** |
+| `worker.py` | 141 | **82%** |
+| `reporter.py` | 90 | **72%** |
+| `cli.py` | 292 | **35%** |
 
 ### Test Structure
 
@@ -245,10 +250,11 @@ pending → running → completed
   - `tests/test_reporter.py` — Summary/progress output, JSON generation
   - `tests/test_scanner_helpers.py` — Password generation, credentials builder, timestamp
   - `tests/test_scanner.py` — Auth, CRUD, polling, export, run_scan_job lifecycle
-  - `tests/test_scanner_advanced.py` — Source scan cloning, plugin extraction
+  - `tests/test_scanner_advanced.py` — Source scan cloning, plugin extraction, settings extraction
+  - `tests/test_report_parser.py` — .nessus XML parsing, severity mapping, port dedup
   - `tests/test_cli.py` — CSV parsing (BOM, whitespace, validation), argparse
   - `tests/test_state.py` — SQLite CRUD, atomic claims, retry logic, thread safety
-  - `tests/test_worker.py` — Batch execution, worker loop, progress reporter
-- **Primary workflow**: `--source-scan` clones an existing Nessus scan's template + plugin settings + naming via `/editor/scan/{id}`. Always prefer this over manual `--template-name`.
+  - `tests/test_worker.py` — Batch execution, worker loop, progress reporter, summary building
+- **Primary workflow**: `--source-scan` clones an existing Nessus scan's template + plugin settings + scalar settings (e.g. `max_checks_per_host`) + naming via `/editor/scan/{id}`. Always prefer this over manual `--template-name`.
 - **Smoke test**: `uv run credflow.py check` (connectivity)
 - **Full E2E**: `uv run credflow.py run --targets targets.csv --source-scan "Ubuntu-AdvancedScan"`
