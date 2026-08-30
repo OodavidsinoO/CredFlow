@@ -121,7 +121,7 @@ class TestWorkerLoop:
         state.load_targets(sample_targets)
 
         # Mock run_scan_job to "complete" each target
-        def fake_run_scan_job(target, client, cfg, st, template_uuid, plugins=None, scan_name_prefix="CredFlow"):
+        def fake_run_scan_job(target, client, cfg, st, template_uuid, plugins=None, settings=None, scan_name_prefix="CredFlow"):
             st.mark_completed(target.ip, f"/tmp/{target.ip}.nessus", f"/tmp/{target.ip}.db")
 
         with patch("credflow.worker.run_scan_job", side_effect=fake_run_scan_job):
@@ -148,7 +148,7 @@ class TestWorkerLoop:
 
         call_count = [0]
 
-        def fake_run_scan_job(target, client, cfg, st, template_uuid, plugins=None, scan_name_prefix="CredFlow"):
+        def fake_run_scan_job(target, client, cfg, st, template_uuid, plugins=None, settings=None, scan_name_prefix="CredFlow"):
             call_count[0] += 1
             if call_count[0] == 1:
                 raise ConnectionError("transient network error")
@@ -165,7 +165,7 @@ class TestWorkerLoop:
 
         call_count = [0]
 
-        def fake_run_scan_job(target, client, cfg, st, template_uuid, plugins=None, scan_name_prefix="CredFlow"):
+        def fake_run_scan_job(target, client, cfg, st, template_uuid, plugins=None, settings=None, scan_name_prefix="CredFlow"):
             call_count[0] += 1
             if call_count[0] == 1:
                 raise ValueError("permanent config error")
@@ -230,7 +230,7 @@ class TestRunBatch:
             mock_client_instance.source_scan_name = None
             mock_client_instance.scan_name_prefix = "CredFlow"
 
-            def fake_run_scan_job(target, client, cfg, st, template_uuid, plugins=None, scan_name_prefix="CredFlow"):
+            def fake_run_scan_job(target, client, cfg, st, template_uuid, plugins=None, settings=None, scan_name_prefix="CredFlow"):
                 st.mark_completed(target.ip, f"/tmp/{target.ip}.nessus", f"/tmp/{target.ip}.db")
 
             mock_run_job.side_effect = fake_run_scan_job
@@ -253,7 +253,7 @@ class TestRunBatch:
             mock_client_instance.get_template_uuid.return_value = "uuid-1"
             mock_client_instance.find_scan_by_name.return_value = None
 
-            def fake_run_scan_job(target, client, cfg, st, template_uuid, plugins=None, scan_name_prefix="CredFlow"):
+            def fake_run_scan_job(target, client, cfg, st, template_uuid, plugins=None, settings=None, scan_name_prefix="CredFlow"):
                 time.sleep(0.5)  # slow but should finish before timeout
 
             mock_run_job.side_effect = fake_run_scan_job
@@ -281,7 +281,7 @@ class TestRunBatch:
             mock_client.extract_plugins_from_config.return_value = {"DoS": {"id": 44, "status": "disabled"}}
             mock_client.get_template_uuid.return_value = "uuid-1"
 
-            def fake_run(target, client, cfg, st, template_uuid, plugins=None, scan_name_prefix="CredFlow"):
+            def fake_run(target, client, cfg, st, template_uuid, plugins=None, settings=None, scan_name_prefix="CredFlow"):
                 st.mark_completed(target.ip, f"/tmp/{target.ip}.nessus", f"/tmp/{target.ip}.db")
 
             mock_run_job.side_effect = fake_run

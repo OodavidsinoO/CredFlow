@@ -28,6 +28,7 @@ def worker_loop(
     state: StateManager,
     template_uuid: str,
     plugins: dict | None = None,
+    settings: dict | None = None,
     scan_name_prefix: str = "CredFlow",
     stop_event: threading.Event | None = None,
 ) -> int:
@@ -42,7 +43,11 @@ def worker_loop(
         if target is None:
             break
         try:
-            run_scan_job(target, client, config, state, template_uuid, plugins=plugins, scan_name_prefix=scan_name_prefix)
+            run_scan_job(
+                target, client, config, state, template_uuid,
+                plugins=plugins, settings=settings,
+                scan_name_prefix=scan_name_prefix,
+            )
             completed += 1
         except _TRANSIENT_EXCEPTIONS:
             logger.debug("Worker continuing after transient failure", exc_info=True)
@@ -94,6 +99,7 @@ def run_batch(
     client = NessusClient(config)
 
     plugins: dict | None = None
+    settings: dict | None = None
     scan_name_prefix = config.scan_name_prefix
 
     if config.source_scan_name:
@@ -124,6 +130,14 @@ def run_batch(
                     logger.info(
                         "Inherited %d modified plugin families from source scan",
                         disabled_count,
+                    )
+                # Extract scalar settings (e.g. max_checks_per_host) from source scan
+                source_settings = client.extract_settings_from_config(scan_config)
+                if source_settings:
+                    settings = source_settings
+                    logger.info(
+                        "Inherited %d settings from source scan",
+                        len(source_settings),
                     )
                 # Default name prefix from source scan
                 if not scan_name_prefix:
@@ -209,6 +223,7 @@ def run_batch(
                     state,
                     template_uuid,
                     plugins,
+                    settings,
                     scan_name_prefix,
                     stop_event=stop_event,
                 )

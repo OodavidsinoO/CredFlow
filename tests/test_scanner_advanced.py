@@ -124,6 +124,60 @@ class TestExtractPluginsFromConfig:
             assert client.extract_plugins_from_config({"plugins": {"other": "stuff"}}) == {}
 
 
+class TestExtractSettingsFromConfig:
+    def test_flattens_scalar_inputs(self, config_dict, base_url):
+        with responses.RequestsMock() as rsps:
+            _full_auth(rsps, base_url)
+            client = NessusClient(Config(**config_dict))
+            scan_config = {
+                "settings": {
+                    "advanced": {
+                        "groups": [{
+                            "inputs": [
+                                {"id": "max_checks_per_host", "type": "small-entry", "default": "25"},
+                                {"id": "safe_checks", "type": "dropdown", "default": "yes"},
+                                {"id": "name", "type": "entry", "default": "MyScan"},
+                                {"id": "text_targets", "type": "entry", "default": "1.2.3.4"},
+                                {"id": "enabled", "type": "checkbox", "default": "yes"},
+                            ]
+                        }]
+                    }
+                }
+            }
+            result = client.extract_settings_from_config(scan_config)
+            assert result["max_checks_per_host"] == "25"
+            assert result["safe_checks"] == "yes"
+            # Per-scan fields excluded
+            assert "name" not in result
+            assert "text_targets" not in result
+            assert "enabled" not in result
+
+    def test_skips_null_defaults(self, config_dict, base_url):
+        with responses.RequestsMock() as rsps:
+            _full_auth(rsps, base_url)
+            client = NessusClient(Config(**config_dict))
+            scan_config = {
+                "settings": {
+                    "basic": {
+                        "inputs": [
+                            {"id": "description", "type": "entry", "default": None},
+                            {"id": "max_hosts_per_scan", "type": "small-entry", "default": "100"},
+                        ]
+                    }
+                }
+            }
+            result = client.extract_settings_from_config(scan_config)
+            assert "description" not in result
+            assert result["max_hosts_per_scan"] == "100"
+
+    def test_empty_settings(self, config_dict, base_url):
+        with responses.RequestsMock() as rsps:
+            _full_auth(rsps, base_url)
+            client = NessusClient(Config(**config_dict))
+            assert client.extract_settings_from_config({}) == {}
+            assert client.extract_settings_from_config({"settings": "not-a-dict"}) == {}
+
+
 class TestFindScanByNameSourceScan:
     """Test the full source scan discovery flow used in run_batch."""
 

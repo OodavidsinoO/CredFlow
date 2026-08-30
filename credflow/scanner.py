@@ -267,6 +267,49 @@ class NessusClient:
                 result_families[name] = {"id": fam_id, "status": status}
         return result_families if result_families else {}
 
+    def extract_settings_from_config(self, scan_config: dict) -> dict:
+        """Extract scalar settings from a scan/policy configuration.
+
+        The editor response nests settings as UI form definitions
+        (``settings.<section>.groups[].inputs[]``) where the current value
+        lives in the ``default`` field. This flattens all scalar inputs into
+        a flat dict suitable for the ``settings`` key in POST /scans.
+
+        Per-scan fields (name, text_targets, file_targets, enabled, launch,
+        description) are excluded — the caller sets those.
+        """
+        scalar_types = {
+            "entry", "small-entry", "checkbox", "password", "radio",
+            "ui_radio", "dropdown", "small-textarea", "textarea", "file",
+        }
+        excluded = {"name", "text_targets", "file_targets", "enabled", "launch", "description"}
+
+        settings = scan_config.get("settings", {})
+        if not isinstance(settings, dict):
+            return {}
+
+        flat: dict[str, object] = {}
+
+        def _walk(node) -> None:
+            if isinstance(node, dict):
+                if (
+                    "id" in node
+                    and "type" in node
+                    and node.get("type") in scalar_types
+                    and node["id"] not in excluded
+                ):
+                    value = node.get("default")
+                    if value is not None:
+                        flat[node["id"]] = value
+                for child in node.values():
+                    _walk(child)
+            elif isinstance(node, list):
+                for child in node:
+                    _walk(child)
+
+        _walk(settings)
+        return flat
+
     def get_template_uuid(self, name: str) -> str:
         """Discover a scan template UUID by name. Falls back to config override.
 
@@ -321,6 +364,7 @@ class NessusClient:
         target: Target,
         template_uuid: str,
         plugins: dict | None = None,
+        settings: dict | None = None,
         scan_name_prefix: str = "CredFlow",
     ) -> int:
         """Create a temporary Nessus scan with single-host credentials.
@@ -330,6 +374,8 @@ class NessusClient:
             template_uuid: Nessus template UUID.
             plugins: Optional ``plugins`` payload (e.g. ``{"Denial of Service": {"id": 44, "status": "disabled"}}``)
                      to control which plugin families are enabled/disabled.
+            settings: Optional flat settings dict (e.g. ``{"max_checks_per_host": "25"}``)
+                      inherited from a source scan.
             scan_name_prefix: Prefix for the scan name; ``{prefix}-{ip}``.
         """
         credentials = self._build_credentials(target)
@@ -337,13 +383,16 @@ class NessusClient:
 
         logger.info("Creating scan '%s' for %s (%s)", scan_name, target.ip, target.os_type)
 
+        scan_settings: dict = {
+            "name": scan_name,
+            "text_targets": target.ip,
+            "enabled": False,
+        }
+        if settings:
+            scan_settings.update(settings)
         body: dict = {
             "uuid": template_uuid,
-            "settings": {
-                "name": scan_name,
-                "text_targets": target.ip,
-                "enabled": False,
-            },
+            "settings": scan_settings,
             "credentials": credentials,
         }
         if plugins:
@@ -606,12 +655,16 @@ def run_scan_job(
     state: StateManager,
     template_uuid: str,
     plugins: dict | None = None,
+    settings: dict | None = None,
     scan_name_prefix: str = "CredFlow",
 ) -> None:
     """Execute the full scan lifecycle for a single target."""
     scan_id = None
     try:
-        scan_id = client.create_scan(target, template_uuid, plugins=plugins, scan_name_prefix=scan_name_prefix)
+        scan_id = client.create_scan(
+            target, template_uuid, plugins=plugins, settings=settings,
+            scan_name_prefix=scan_name_prefix,
+        )
         client.launch_scan(scan_id)
 
         final_status = client.poll_until_done(
